@@ -64,7 +64,7 @@ resource "aws_route_table_association" "public_1b" {
 resource "aws_subnet" "public-1b" {
 	vpc_id = aws_vpc.default.id #vpc id
 	cidr_block = "10.0.2.0/24"
-	availability_zone = "us-east-1a"
+	availability_zone = "us-east-1b"
 	map_public_ip_on_launch = true
 	tags = {
 		Name = "public-1b"
@@ -124,9 +124,160 @@ resource "aws_subnet" "private-1a" {
 resource "aws_subnet" "private-1b" {
 	vpc_id = aws_vpc.default.id
 	cidr_block = "10.0.4.0/24"
-	availability_zone = "us-east-1a"
+	availability_zone = "us-east-1b"
 	map_public_ip_on_launch = false
 	tags = {
 		Name = "private-1b"
+	}
+}
+
+resource "aws_lb_target_group" "target-group" {
+
+	name = "target-group"
+	port = 80
+	protocol = "TCP"
+	vpc_id = aws_vpc.default.id
+
+	health_check {
+		protocol = "TCP"
+		port = "traffic-port"
+	}
+
+}
+
+resource "aws_lb" "our-nlb" {
+
+	name = "our-nlb"
+	load_balancer_type = "network"
+
+	subnets = [
+		aws_subnet.public-1a.id,
+		aws_subnet.public-1b.id,
+	]
+	tags = {
+		Name = "our-nlb"
+	}
+}
+
+resource "aws_lb_listener" "nlb_listener" {
+	load_balancer_arn = aws_lb.our-nlb.arn
+	port = 80
+	protocol = "TCP"
+
+	default_action {
+		type = "forward"
+		target_group_arn = aws_lb_target_group.target-group.arn
+	}
+
+}
+
+output "nlb_dns_name" {
+	value = aws_lb.our-nlb.dns_name
+}
+
+resource "aws_security_group" "asg_sg" {
+
+	name = "asg-instances-sg"
+	description = "allow http to go in and out"
+	vpc_id = aws_vpc.default.id
+
+	#inbound rules
+
+	ingress {
+		from_port = 80 # defines range not destination/start
+		to_port = 80
+		protocol = "tcp"
+		cidr_blocks = ["0.0.0.0/0"]
+	}
+
+	egress {
+		from_port = 0
+		to_port = 0
+		protocol = "-1"
+		cidr_blocks = ["0.0.0.0/0"]
+	}
+
+	tags = {
+		Name = "asg-instances-sg"
+	}
+
+}
+
+resource "aws_iam_role" "ec2-role" {
+	name = "ec2-role"
+	assume_role_policy = jsonencode({
+		Version = "2012-10-17"
+		Statement = [{
+			Effect = "Allow"
+			Principal = {Service = "ec2.amazonaws.com"}
+			Action = "sts:AssumeRole"
+		}]
+	})
+}
+
+resource "aws_iam_role_policy_attachment" "ssm" {
+	role = aws_iam_role.ec2-role.name
+	policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy_attachment" "cwlogs" {
+	role = aws_iam_role.ec2-role.name
+	policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_iam_instance_profile" "ec2-profile" {
+	name = "ec2-instance-profile"
+	role = aws_iam_role.ec2-role.name
+}
+
+resource "aws_launch_template" "launch-template" {
+
+	name_prefix = "asg-ec2-"
+	image_id = "ami-0c02fb55956c7d316"
+	instance_type = "t3.micro"
+
+	iam_instance_profile {
+		name = aws_iam_instance_profile.ec2-profile.name
+	}
+
+	vpc_security_group_ids = [aws_security_group.asg_sg.id]
+
+	user_data = base64encode (<<-EOF
+	
+	#no idea
+
+	EOF
+	)
+}
+
+resource "aws_autoscaling_group" "the-asg" {
+	name = "the-actual-asg"
+	min_size = 2
+	max_size = 4
+	desired_capacity = 2
+
+	vpc_zone_identifier = [
+		aws_subnet.private-1a.id,
+		aws_subnet.private-1b.id,
+	]
+
+	health_check_type = "EC2"
+	health_check_grace_period = 60
+
+	target_group_arns = [aws_lb_target_group.target-group.arn]
+
+	launch_template {
+		id = aws_launch_template.launch-template.id
+		version = "$Latest"
+	}
+
+	tag {
+		key = "Name"
+		value = "asg-app-instance"
+		propagate_at_launch = true
+	}
+
+	lifecycle {
+		create_before_destroy = true
 	}
 }
