@@ -244,7 +244,85 @@ resource "aws_launch_template" "launch-template" {
 
 	user_data = base64encode (<<-EOF
 	
-	#no idea
+	#!/bin/bash
+	set -e
+
+	###
+	#update stuff
+	###
+
+	yum update -y
+	yum install -y curl wget unzip amazon-cloudwatch-agent
+
+	###
+	#trivy
+	###
+
+	rpm --import https://aquasecurity.github.io/trivy-repo/rpm-public.key
+	cat << 'TRIVYREPO' > /etc/yum.repos.d/trivy.repo
+	[trivy]
+	name=Trivy repository
+	baseurl=https://aquasecurity.github.io/trivy-repo/rpm/releases/\$basearch/
+	gpgcheck=1
+	enabled=1
+	gpgkey=https://aquasecurity.github.io/trivy-repo/rpm-public.key
+	TRIVYREPO
+
+	yum install -y trivy
+
+	###
+	#falco
+	###
+
+	curl -fsSL https://falco.org/repo/falcosecurity-rpm.asc | rpm --import -
+	curl -fsSL https://falco.org/repo/falcosecurity-rpm.repo > /etc/yum.repos.d/falcosecurity.repo
+
+	yum install -y falco
+
+	systemctl enable falco
+	systemctl start falco
+
+
+	###
+	#cloudwatchlogs
+	###
+
+	cat << 'CWCONFIG' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+	{
+	  "logs": {
+		"logs_collected": {
+		  "files": {
+			"collect_list": [
+			  {
+				"file_path": "/var/log/falco/falco.log",
+				"log_group_name": "falco-logs",
+				"log_stream_name": "{instance_id}/falco",
+				"timestamp_format": "%Y-%m-%d %H:%M:%S"
+			  },
+			  {
+				"file_path": "/var/log/trivy.log",
+				"log_group_name": "trivy-logs",
+				"log_stream_name": "{instance_id}/trivy",
+				"timestamp_format": "%Y-%m-%d %H:%M:%S"
+			  }
+			]
+		  }
+		}
+	  }
+	}
+	CWCONFIG
+
+	/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+	  -a start \
+	  -m ec2 \
+	  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+	########################################
+	# Run an initial Trivy scan on the host
+	########################################
+	trivy fs / --severity HIGH,CRITICAL --no-progress > /var/log/trivy.log 2>&1 || true
+
+	echo "Falco + Trivy + CloudWatch setup complete"
 
 	EOF
 	)
@@ -290,4 +368,69 @@ resource "aws_sns_topic_subscription" "email_sub" {
 	topic_arn = aws_sns_topic.security_alerts.arn
 	protocol = "email"
 	endpoint = var.email
+}
+
+resource "aws_cloudwatch_log_group" "falco_logs" {
+  name              = "falco-logs"
+  retention_in_days = 30
+}
+
+resource "aws_cloudwatch_log_group" "trivy_logs" {
+  name              = "trivy-logs"
+  retention_in_days = 30
+}
+
+
+resource "aws_cloudwatch_log_metric_filter" "falco_alerts_metric" {
+  name           = "falco-detection-count"
+  log_group_name = "falco-logs"
+
+  pattern = "{ $.priority = \"Alert\" || $.priority = \"Error\" || $.priority = \"Warning\" }"
+
+  metric_transformation {
+    name      = "FalcoDetections"
+    namespace = "Security"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "falco_alarm" {
+  alarm_name          = "falco-detection-alert"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "FalcoDetections"
+  namespace           = "Security"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+
+  alarm_actions = [aws_sns_topic.security_alerts.arn]
+}
+
+
+resource "aws_cloudwatch_log_metric_filter" "trivy_alerts_metric" {
+  name           = "trivy-vuln-count"
+  log_group_name = "trivy-logs"
+
+  pattern = "CRITICAL || HIGH"
+
+  metric_transformation {
+    name      = "TrivyVulnerabilities"
+    namespace = "Security"
+    value     = "1"
+  }
+}
+
+
+resource "aws_cloudwatch_metric_alarm" "trivy_alarm" {
+  alarm_name          = "trivy-critical-alert"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "TrivyVulnerabilities"
+  namespace           = "Security"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+
+  alarm_actions = [aws_sns_topic.security_alerts.arn]
 }
