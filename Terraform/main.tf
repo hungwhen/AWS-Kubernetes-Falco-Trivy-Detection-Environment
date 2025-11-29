@@ -383,7 +383,7 @@ resource "aws_cloudwatch_log_group" "trivy_logs" {
 
 resource "aws_cloudwatch_log_metric_filter" "falco_alerts_metric" {
   name           = "falco-detection-count"
-  log_group_name = "falco-logs"
+  log_group_name = aws_cloudwatch_log_group.falco_logs.name
 
   pattern = "{ $.priority = \"Alert\" || $.priority = \"Error\" || $.priority = \"Warning\" }"
 
@@ -410,9 +410,9 @@ resource "aws_cloudwatch_metric_alarm" "falco_alarm" {
 
 resource "aws_cloudwatch_log_metric_filter" "trivy_alerts_metric" {
   name           = "trivy-vuln-count"
-  log_group_name = "trivy-logs"
+  log_group_name = aws_cloudwatch_log_group.trivy_logs.name
 
-  pattern = "CRITICAL || HIGH"
+  pattern = "CRITICAL"
 
   metric_transformation {
     name      = "TrivyVulnerabilities"
