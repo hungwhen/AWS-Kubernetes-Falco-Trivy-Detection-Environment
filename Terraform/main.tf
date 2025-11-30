@@ -233,13 +233,25 @@ resource "aws_iam_instance_profile" "ec2-profile" {
 resource "aws_launch_template" "launch-template" {
   name_prefix   = "asg-ec2-"
   image_id      = "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-  instance_type = "t3.micro"
+
+  # stay cheap: keep micro
+  instance_type = "t3.micro" 
 
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2-profile.name
   }
 
   vpc_security_group_ids = [aws_security_group.asg_sg.id]
+
+  block_device_mappings {
+    device_name = "/dev/xvda" # default root device for AL2023
+
+    ebs {
+      volume_size = 20      # 20 GB is usually plenty; 16 GB minimum
+      volume_type = "gp3"
+      encrypted   = true
+    }
+  }
 
   user_data = filebase64("${path.module}/user_data.sh")
 }
