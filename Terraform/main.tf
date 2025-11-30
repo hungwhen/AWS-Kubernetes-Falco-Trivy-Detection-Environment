@@ -231,102 +231,19 @@ resource "aws_iam_instance_profile" "ec2-profile" {
 }
 
 resource "aws_launch_template" "launch-template" {
+  name_prefix   = "asg-ec2-"
+  image_id      = "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+  instance_type = "t3.micro"
 
-	name_prefix = "asg-ec2-"
-	image_id = "ami-0c02fb55956c7d316"
-	instance_type = "t3.micro"
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2-profile.name
+  }
 
-	iam_instance_profile {
-		name = aws_iam_instance_profile.ec2-profile.name
-	}
+  vpc_security_group_ids = [aws_security_group.asg_sg.id]
 
-	vpc_security_group_ids = [aws_security_group.asg_sg.id]
-
-	user_data = base64encode (<<-EOF
-	
-	#!/bin/bash
-	set -e
-
-	###
-	#update stuff
-	###
-
-	yum update -y
-	yum install -y curl wget unzip amazon-cloudwatch-agent
-
-	###
-	#trivy
-	###
-
-	rpm --import https://aquasecurity.github.io/trivy-repo/rpm-public.key
-	cat << 'TRIVYREPO' > /etc/yum.repos.d/trivy.repo
-	[trivy]
-	name=Trivy repository
-	baseurl=https://aquasecurity.github.io/trivy-repo/rpm/releases/\$basearch/
-	gpgcheck=1
-	enabled=1
-	gpgkey=https://aquasecurity.github.io/trivy-repo/rpm-public.key
-	TRIVYREPO
-
-	yum install -y trivy
-
-	###
-	#falco
-	###
-
-	curl -fsSL https://falco.org/repo/falcosecurity-rpm.asc | rpm --import -
-	curl -fsSL https://falco.org/repo/falcosecurity-rpm.repo > /etc/yum.repos.d/falcosecurity.repo
-
-	yum install -y falco
-
-	systemctl enable falco
-	systemctl start falco
-
-
-	###
-	#cloudwatchlogs
-	###
-
-	cat << 'CWCONFIG' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-	{
-	  "logs": {
-		"logs_collected": {
-		  "files": {
-			"collect_list": [
-			  {
-				"file_path": "/var/log/falco/falco.log",
-				"log_group_name": "falco-logs",
-				"log_stream_name": "{instance_id}/falco",
-				"timestamp_format": "%Y-%m-%d %H:%M:%S"
-			  },
-			  {
-				"file_path": "/var/log/trivy.log",
-				"log_group_name": "trivy-logs",
-				"log_stream_name": "{instance_id}/trivy",
-				"timestamp_format": "%Y-%m-%d %H:%M:%S"
-			  }
-			]
-		  }
-		}
-	  }
-	}
-	CWCONFIG
-
-	/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-	  -a start \
-	  -m ec2 \
-	  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-
-	########################################
-	# Run an initial Trivy scan on the host
-	########################################
-	trivy fs / --severity HIGH,CRITICAL --no-progress > /var/log/trivy.log 2>&1 || true
-
-	echo "Falco + Trivy + CloudWatch setup complete"
-
-	EOF
-	)
+  user_data = filebase64("${path.module}/user_data.sh")
 }
+
 
 resource "aws_autoscaling_group" "the-asg" {
 	name = "the-actual-asg"
@@ -354,6 +271,11 @@ resource "aws_autoscaling_group" "the-asg" {
 		value = "asg-app-instance"
 		propagate_at_launch = true
 	}
+
+	depends_on = [
+		aws_nat_gateway.nat,
+		aws_route_table.private_route_table
+	]
 
 	lifecycle {
 		create_before_destroy = true

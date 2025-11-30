@@ -1,9 +1,9 @@
 variable "region" {
-	description = "AWS Region to deploy"
-	type = string
+  description = "AWS Region to deploy"
+  type        = string
 }
 
 variable "email" {
-	description = "THE EMAIL"
-	type = string
+  description = "THE EMAIL"
+  type        = string
 }
